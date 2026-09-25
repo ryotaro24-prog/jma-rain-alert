@@ -5,6 +5,13 @@ on:
   schedule:
     - cron: '*/5 * * * *'
 
+permissions:
+  contents: write
+
+concurrency:
+  group: jma-rain-alert
+  cancel-in-progress: false
+
 jobs:
   check-jma:
     runs-on: ubuntu-latest
@@ -23,3 +30,13 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python jma_alert.py
+
+      - name: Save notification state
+        run: |
+          if [[ -n "$(git status --porcelain -- seen_ids.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add seen_ids.json
+            git commit -m "Update JMA alert state"
+            git push
+          fi
