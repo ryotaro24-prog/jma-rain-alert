@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
-
+TEST_NOTIFICATION = os.environ.get("TEST_NOTIFICATION", "").lower() in ("1", "true", "yes")
 FEEDS = [
     "https://www.data.jma.go.jp/developer/xml/feed/extra.xml",
     "https://www.data.jma.go.jp/developer/xml/feed/regular.xml",
@@ -204,7 +204,18 @@ def send_ntfy(category, title, issue_time, message, source_url):
 
 
 def main():
-    seen = load_seen()
+    if TEST_NOTIFICATION:
+        now = datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
+        send_ntfy(
+            "動作テスト",
+            "JMA線状降水帯アラート・テスト",
+            now,
+            "GitHub Actionsからのテスト通知です。",
+            "https://www.jma.go.jp/",
+        )
+        print("Test notification sent.")
+        return
+        seen = load_seen()
     current_ids = set()
     alerts_sent = 0
 
