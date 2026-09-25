@@ -232,9 +232,7 @@ def main():
         for entry in entries:
             entry_id = entry["id"]
             current_ids.add(entry_id)
-            url = entry["url"]
-            code = get_product_code(url)
-            print(f"DEBUG URL: {url} / CODE: {code}")
+
 
             if entry_id in seen:
                 continue
