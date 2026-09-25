@@ -1,77 +1,64 @@
 import os
 import re
+import json
 import urllib.request
-import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 
-# ==========================================
-# Settings
-# ==========================================
-
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 
-# JMA PULL-type Atom feeds
 FEEDS = [
     "https://www.data.jma.go.jp/developer/xml/feed/extra.xml",
     "https://www.data.jma.go.jp/developer/xml/feed/regular.xml",
 ]
 
+STATE_FILE = "seen_ids.json"
 JST = timezone(timedelta(hours=9))
-
-# Only relatively new JMA messages are considered.
-# This also prevents old feed entries from being notified
-# when the workflow is first installed.
-MAX_AGE_MINUTES = 20
+MAX_AGE_MINUTES = 30
 
 
 def fetch(url):
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "jma-rain-alert/1.0"}
+        headers={"User-Agent": "jma-rain-alert/1.0"},
     )
     with urllib.request.urlopen(req, timeout=20) as response:
         return response.read()
 
 
-def text_of(root):
-    """Return all text contained in an XML document."""
+def local_name(tag):
+    return tag.split("}")[-1]
+
+
+def all_text(root):
     return " ".join(
-        t.strip()
-        for t in root.itertext()
-        if t and t.strip()
+        text.strip()
+        for text in root.itertext()
+        if text and text.strip()
     )
 
 
-def find_text(root, local_name):
-    """Find the first XML element by local name, ignoring namespaces."""
+def first_text(root, name):
     for elem in root.iter():
-        if elem.tag.split("}")[-1] == local_name:
+        if local_name(elem.tag) == name:
             if elem.text and elem.text.strip():
                 return elem.text.strip()
     return ""
 
 
-def product_code(url):
-    """
-    JMA XML URLs normally contain a filename such as:
-    ..._VPBS50_...
-    """
-    match = re.search(r"_([A-Z]{4}\d{2})_", url)
+def get_product_code(url):
+    # Examples may contain strings such as VPBS50.
+    match = re.search(r"(VPBS50|VPZJ51|VPCJ51|VPFJ51)", url)
     return match.group(1) if match else ""
 
 
-def classify(code, title, full_text):
-    """
-    Return the alert category we care about.
-    """
-
-    combined = f"{title} {full_text}"
+def classify(code, title, text):
+    combined = f"{title} {text}"
 
     if "線状降水帯" not in combined:
         return None
 
-    # 2026 JMA Weather Disaster Bulletin
+    # Weather Disaster Bulletin
     if code == "VPBS50":
         if (
             "線状降水帯直前" in combined
@@ -85,67 +72,49 @@ def classify(code, title, full_text):
         ):
             return "線状降水帯・発生情報"
 
-    # 2026 Weather Commentary Information
+    # Weather Commentary Information
     if code in ("VPZJ51", "VPCJ51", "VPFJ51"):
         if (
-            "線状降水帯" in combined
-            and (
-                "半日前" in combined
-                or "発生する可能性" in combined
-                or "発生するおそれ" in combined
-            )
+            "半日前" in combined
+            or "発生する可能性" in combined
+            or "発生するおそれ" in combined
         ):
             return "線状降水帯・半日前予測"
 
     return None
 
 
-def send_ntfy(category, title, issue_time, headline, source_url):
+def load_seen():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return set(data)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
 
-    if not NTFY_TOPIC:
-        raise RuntimeError("NTFY_TOPIC is not configured.")
-
-    body = (
-        f"{category}\n\n"
-        f"{title}\n"
-        f"発表時刻: {issue_time}\n\n"
-        f"{headline}\n\n"
-        f"気象庁XML: {source_url}"
-    )
-
-    priority = "urgent" if (
-        "直前" in category or "発生" in category
-    ) else "high"
-
-    url = "https://ntfy.sh/" + urllib.parse.quote(
-        NTFY_TOPIC, safe=""
-    )
-
-    req = urllib.request.Request(
-        url,
-        data=body.encode("utf-8"),
-        method="POST",
-        headers={
-            "Title": urllib.parse.quote(
-                "JMA 線状降水帯情報"
-            ),
-            "Priority": priority,
-            "Tags": "warning,rain_cloud",
-        },
-    )
-
-    with urllib.request.urlopen(req, timeout=20) as response:
-        response.read()
+    return set()
 
 
-def parse_atom(feed_data):
+def save_seen(seen):
+    # Keep the state file reasonably small.
+    items = list(seen)[-500:]
 
-    root = ET.fromstring(feed_data)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            items,
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
+
+def parse_atom(data):
+    root = ET.fromstring(data)
     entries = []
 
     for entry in root.iter():
-        if entry.tag.split("}")[-1] != "entry":
+        if local_name(entry.tag) != "entry":
             continue
 
         entry_id = ""
@@ -153,23 +122,23 @@ def parse_atom(feed_data):
         link = ""
 
         for child in entry:
-            name = child.tag.split("}")[-1]
+            name = local_name(child.tag)
 
             if name == "id":
-                entry_id = child.text or ""
+                entry_id = (child.text or "").strip()
 
             elif name == "updated":
-                updated = child.text or ""
+                updated = (child.text or "").strip()
 
             elif name == "link":
-                href = child.attrib.get("href")
-                if href and href.endswith(".xml"):
+                href = child.attrib.get("href", "")
+                if href.endswith(".xml"):
                     link = href
 
         if link:
             entries.append(
                 {
-                    "id": entry_id,
+                    "id": entry_id or link,
                     "updated": updated,
                     "url": link,
                 }
@@ -178,8 +147,7 @@ def parse_atom(feed_data):
     return entries
 
 
-def recent_enough(updated):
-
+def is_recent(updated):
     if not updated:
         return True
 
@@ -187,10 +155,9 @@ def recent_enough(updated):
         dt = datetime.fromisoformat(
             updated.replace("Z", "+00:00")
         )
-
-        now = datetime.now(timezone.utc)
-
-        age = (now - dt).total_seconds() / 60
+        age = (
+            datetime.now(timezone.utc) - dt
+        ).total_seconds() / 60
 
         return -5 <= age <= MAX_AGE_MINUTES
 
@@ -198,31 +165,75 @@ def recent_enough(updated):
         return True
 
 
-def main():
+def send_ntfy(category, title, issue_time, message, source_url):
+    if not NTFY_TOPIC:
+        raise RuntimeError("NTFY_TOPIC is not configured")
 
-    found = 0
+    body = (
+        f"{category}\n\n"
+        f"{title}\n"
+        f"発表時刻: {issue_time}\n\n"
+        f"{message}\n\n"
+        f"気象庁XML: {source_url}"
+    )
+
+    priority = 5 if (
+        "直前" in category or "発生" in category
+    ) else 4
+
+    payload = json.dumps(
+        {
+            "topic": NTFY_TOPIC,
+            "title": "JMA 線状降水帯情報",
+            "message": body,
+            "priority": priority,
+            "tags": ["warning", "rain_cloud"],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://ntfy.sh",
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urllib.request.urlopen(req, timeout=20) as response:
+        response.read()
+
+
+def main():
+    seen = load_seen()
+    current_ids = set()
+    alerts_sent = 0
 
     for feed_url in FEEDS:
-
-        print(f"Checking feed: {feed_url}")
+        print(f"Checking: {feed_url}")
 
         try:
-            feed_data = fetch(feed_url)
-            entries = parse_atom(feed_data)
-
+                       entries = parse_atom(fetch(feed_url))
         except Exception as e:
             print(f"Feed error: {e}")
             continue
 
         for entry in entries:
+            entry_id = entry["id"]
+            current_ids.add(entry_id)
 
-            if not recent_enough(entry["updated"]):
+            if entry_id in seen:
+                continue
+
+            # Mark as seen even if it is not an alert.
+            # This prevents repeatedly downloading the same entry.
+            seen.add(entry_id)
+
+            if not is_recent(entry["updated"]):
                 continue
 
             url = entry["url"]
-            code = product_code(url)
+            code = get_product_code(url)
 
-            # Limit downloads to likely relevant products
             if code not in (
                 "VPBS50",
                 "VPZJ51",
@@ -232,45 +243,33 @@ def main():
                 continue
 
             try:
-                xml_data = fetch(url)
-                root = ET.fromstring(xml_data)
-
+                root = ET.fromstring(fetch(url))
             except Exception as e:
-                print(f"XML error: {url}: {e}")
+                print(f"XML error: {e}")
                 continue
 
-            full_text = text_of(root)
+            title = first_text(root, "Title")
+            report_time = first_text(root, "ReportDateTime")
+            text = all_text(root)
 
-            title = find_text(root, "Title")
-            headline = find_text(root, "Text")
-            report_time = find_text(root, "ReportDateTime")
-
-            category = classify(
-                code,
-                title,
-                full_text
-            )
+            category = classify(code, title, text)
 
             if not category:
                 continue
 
-            if not headline:
-                headline = title
+            headline = first_text(root, "Text") or title
 
             try:
                 dt = datetime.fromisoformat(
                     report_time.replace("Z", "+00:00")
                 )
-                issue_time = dt.astimezone(
-                    JST
-                ).strftime("%Y-%m-%d %H:%M JST")
-
+                issue_time = dt.astimezone(JST).strftime(
+                    "%Y-%m-%d %H:%M JST"
+                )
             except Exception:
                 issue_time = report_time or "不明"
 
-            print(
-                f"ALERT: {category} / {title}"
-            )
+            print(f"ALERT: {category} / {title}")
 
             send_ntfy(
                 category,
@@ -280,9 +279,11 @@ def main():
                 url,
             )
 
-            found += 1
+            alerts_sent += 1
 
-    print(f"Finished. Alerts sent: {found}")
+    save_seen(seen)
+
+    print(f"Finished. Alerts sent: {alerts_sent}")
 
 
 if __name__ == "__main__":
