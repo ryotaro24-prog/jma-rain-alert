@@ -237,9 +237,7 @@ def main():
             if entry_id in seen:
                 continue
 
-            # Mark as seen even if it is not an alert.
-            # This prevents repeatedly downloading the same entry.
-            seen.add(entry_id)
+
 
             if not is_recent(entry["updated"]):
                 continue
@@ -260,7 +258,7 @@ def main():
             except Exception as e:
                 print(f"XML error: {e}")
                 continue
-
+                
             title = first_text(root, "Title")
             report_time = first_text(root, "ReportDateTime")
             text = all_text(root)
@@ -268,6 +266,7 @@ def main():
             category = classify(code, title, text)
 
             if not category:
+                seen.add(entry_id)
                 continue
 
             headline = first_text(root, "Text") or title
@@ -291,7 +290,7 @@ def main():
                 headline,
                 url,
             )
-
+            seen.add(entry_id)
             alerts_sent += 1
 
     save_seen(seen)
