@@ -2,6 +2,12 @@ name: JMA Rain Alert
 
 on:
   workflow_dispatch:
+    inputs:
+      test:
+        description: "ntfyテスト通知を送る"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '*/5 * * * *'
 
@@ -29,6 +35,7 @@ jobs:
       - name: Check JMA information
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TEST_NOTIFICATION: ${{ inputs.test }} 
         run: python jma_alert.py
 
       - name: Save notification state
