@@ -215,7 +215,8 @@ def main():
         )
         print("Test notification sent.")
         return
-        seen = load_seen()
+        
+    seen = load_seen()
     current_ids = set()
     alerts_sent = 0
 
